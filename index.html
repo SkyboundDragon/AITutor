@@ -1,0 +1,1116 @@
+<!DOCTYPE html>
+<!--
+══════════════════════════════════════════════════════════════════════
+  MATH TUTOR — Gemini (Cloud Run) VERSION
+  Self-contained HTML. Open directly in a browser — no setup needed.
+
+  BACKEND
+  ───────
+  Calls a GCP Cloud Run server at BACKEND_URL (see callGemini() in
+  the script section). The server proxies prompts to Gemini via the
+  Vertex AI API and returns { "response": "..." }.
+
+  JS handles all math computation (math.js). Gemini only writes
+  hints, quiz questions, and wrong answer choices.
+══════════════════════════════════════════════════════════════════════
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Math Tutor · Gemini</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/12.4.3/math.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0d0d0f;
+    --bg2: #13131a;
+    --bg3: #1a1a24;
+    --border: #2a2a3a;
+    --accent: #c8c4ff;
+    --accent-dim: #7c78cc;
+    --accent-bg: rgba(200,196,255,0.07);
+    --green: #22c55e;
+    --green-bg: rgba(34,197,94,0.1);
+    --red: #ef4444;
+    --red-bg: rgba(239,68,68,0.1);
+    --yellow: #facc15;
+    --yellow-bg: rgba(250,204,21,0.1);
+    --text: #e8e6f0;
+    --text-muted: #888899;
+    --mono: 'JetBrains Mono', monospace;
+    --sans: 'Inter', sans-serif;
+    --radius: 10px;
+  }
+
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); }
+
+  /* ── HEADER ── */
+  header {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(13,13,15,0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    display: flex; align-items: center; justify-content: space-between;
+    height: 56px;
+  }
+  .header-left { display: flex; flex-direction: column; gap: 2px; }
+  .app-name { font-family: var(--mono); font-size: 15px; font-weight: 700; color: var(--accent); letter-spacing: -0.3px; }
+  .app-sub { font-size: 10px; color: var(--text-muted); letter-spacing: 0.4px; }
+  .score-box { display: flex; gap: 16px; font-family: var(--mono); font-size: 13px; }
+  .score-c { color: var(--green); }
+  .score-w { color: var(--red); }
+
+  /* ── CONFIG BAR ── */
+  .config-bar {
+    background: var(--bg2); border-bottom: 1px solid var(--border);
+    padding: 10px 24px; display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+  }
+  .config-label { font-size: 11px; font-weight: 600; color: var(--text-muted); letter-spacing: 0.5px; white-space: nowrap; }
+  .config-input {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px;
+    font-family: var(--mono); font-size: 12px; color: var(--text);
+    outline: none; width: 200px;
+  }
+  .config-input:focus { border-color: var(--accent-dim); }
+  .config-select {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px;
+    font-family: var(--mono); font-size: 12px; color: var(--text);
+    outline: none; cursor: pointer;
+  }
+  .detect-btn {
+    padding: 6px 12px; background: var(--bg3);
+    border: 1px solid var(--border); border-radius: 6px;
+    font-family: var(--sans); font-size: 12px; color: var(--text-muted);
+    cursor: pointer; transition: all .13s; white-space: nowrap;
+  }
+  .detect-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
+  .status-wrap { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
+  .status-dot.idle   { background: var(--border); }
+  .status-dot.busy   { background: var(--yellow); animation: pulse .9s infinite; }
+  .status-dot.ok     { background: var(--green); }
+  .status-dot.bad    { background: var(--red); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .status-text { font-size: 11px; color: var(--text-muted); font-family: var(--mono); }
+
+  /* ── CORS WARNING ── */
+  .cors-warning {
+    display: none; background: var(--red-bg);
+    border-bottom: 1px solid rgba(239,68,68,0.3);
+    padding: 12px 24px;
+  }
+  .cors-warning.show { display: block; }
+  .cors-title { font-size: 12px; font-weight: 700; color: var(--red); margin-bottom: 8px; }
+  .cors-cmd {
+    font-family: var(--mono); font-size: 12px;
+    background: rgba(0,0,0,0.4); border-radius: 5px;
+    padding: 6px 10px; margin: 4px 0; color: var(--yellow);
+  }
+  .cors-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+  /* ── MAIN ── */
+  main { max-width: 720px; margin: 0 auto; padding: 32px 20px 80px; }
+
+  /* ── UNIFIED INPUT AREA ── */
+  #input-area { display: flex; flex-direction: column; gap: 10px; }
+
+  .input-row { display: flex; gap: 8px; }
+  #eq-input {
+    flex: 1; background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 16px;
+    font-family: var(--mono); font-size: 15px; color: var(--text);
+    outline: none; transition: border-color .15s;
+  }
+  #eq-input:focus { border-color: var(--accent-dim); }
+  #eq-input::placeholder { color: var(--text-muted); }
+
+  .action-row { display: flex; gap: 8px; }
+  .btn-clear {
+    padding: 9px 14px; background: var(--bg3);
+    border: 1px solid var(--border); border-radius: 8px;
+    color: var(--text-muted); font-family: var(--sans); font-size: 13px;
+    cursor: pointer; transition: all .13s;
+  }
+  .btn-clear:hover { border-color: var(--red); color: var(--red); }
+  .btn-back {
+    padding: 9px 14px; background: var(--bg3);
+    border: 1px solid var(--border); border-radius: 8px;
+    color: var(--text-muted); font-family: var(--mono); font-size: 14px;
+    cursor: pointer; transition: all .13s;
+  }
+  .btn-back:hover { border-color: var(--accent-dim); color: var(--accent); }
+  .solve-btn {
+    flex: 1; padding: 9px 22px; background: var(--accent); color: #0d0d0f;
+    border: none; border-radius: 8px; font-family: var(--sans);
+    font-size: 14px; font-weight: 700; cursor: pointer;
+    white-space: nowrap; transition: opacity .15s;
+  }
+  .solve-btn:hover { opacity: 0.88; }
+  .solve-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* ── EXAMPLES DROPDOWN ── */
+  .examples-toggle {
+    display: flex; align-items: center; gap: 6px;
+    padding: 7px 13px; background: var(--bg3);
+    border: 1px solid var(--border); border-radius: 8px;
+    color: var(--text-muted); font-family: var(--sans); font-size: 12px; font-weight: 500;
+    cursor: pointer; transition: all .13s; width: fit-content;
+  }
+  .examples-toggle:hover { border-color: var(--accent-dim); color: var(--accent); }
+  .examples-toggle .arrow { transition: transform .2s; display: inline-block; font-size: 10px; }
+  .examples-toggle.open .arrow { transform: rotate(180deg); }
+
+  .examples-panel {
+    display: none; background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden;
+  }
+  .examples-panel.open { display: block; }
+
+  .ex-subject { border-bottom: 1px solid var(--border); }
+  .ex-subject:last-child { border-bottom: none; }
+  .ex-subject-label {
+    padding: 8px 14px 6px;
+    font-size: 10px; font-weight: 700; color: var(--text-muted);
+    letter-spacing: 0.8px; text-transform: uppercase;
+  }
+  .ex-chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 0 10px 10px; }
+  .ex-chip {
+    padding: 5px 11px; background: var(--bg3);
+    border: 1px solid var(--border); border-radius: 20px;
+    font-family: var(--mono); font-size: 12px; color: var(--text-muted);
+    cursor: pointer; transition: all .13s;
+  }
+  .ex-chip:hover { border-color: var(--accent-dim); color: var(--accent); background: var(--accent-bg); }
+
+  /* ── KEYPAD ── */
+  .keypad-wrap {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .key-section { display: flex; flex-direction: column; gap: 6px; }
+  .key-section-label {
+    font-size: 10px; font-weight: 600; color: var(--text-muted);
+    letter-spacing: 0.8px; text-transform: uppercase;
+  }
+  .key-row { display: flex; flex-wrap: wrap; gap: 5px; }
+
+  /* numbers + ops sit side by side with just a gap between */
+  .num-ops-row {
+    display: flex; flex-direction: row; align-items: flex-start; gap: 20px;
+  }
+  .num-grid {
+    display: grid; grid-template-columns: repeat(3, 44px); gap: 5px;
+  }
+  .ops-col {
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .ops-keys { display: flex; flex-wrap: wrap; gap: 5px; }
+  .key {
+    min-width: 44px; padding: 8px 10px;
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 6px; color: var(--text);
+    font-family: var(--mono); font-size: 13px;
+    cursor: pointer; transition: all .1s; text-align: center;
+  }
+  .key:hover { background: var(--accent-bg); border-color: var(--accent-dim); color: var(--accent); }
+  .key:active { transform: scale(0.94); }
+
+  .more-toggle {
+    display: flex; align-items: center; gap: 5px;
+    padding: 6px 12px; background: transparent;
+    border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text-muted); font-family: var(--sans); font-size: 11px;
+    cursor: pointer; transition: all .13s; width: fit-content; margin-top: 2px;
+  }
+  .more-toggle:hover { border-color: var(--accent-dim); color: var(--accent); }
+  .more-toggle .arrow { transition: transform .2s; display: inline-block; font-size: 9px; }
+  .more-toggle.open .arrow { transform: rotate(180deg); }
+
+  .more-keys { display: none; }
+  .more-keys.open { display: flex; flex-direction: column; gap: 12px; margin-top: 4px; }
+
+  /* ── OUTPUT ── */
+  #output { display: flex; flex-direction: column; gap: 14px; margin-top: 28px; }
+
+  /* ── LOADING ── */
+  .loading-card {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 28px;
+    display: flex; align-items: center; gap: 14px;
+  }
+  .spinner {
+    width: 22px; height: 22px; border: 2px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin .75s linear infinite; flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-text { font-family: var(--mono); font-size: 13px; color: var(--text-muted); }
+
+  /* ── STEP CARD ── */
+  .step-card {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden;
+    animation: fadeUp .25s ease both;
+  }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .step-header {
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+    border-left: 3px solid var(--accent-dim);
+    display: flex; align-items: center; gap: 12px;
+  }
+  .step-header.correct { border-left-color: var(--green); }
+  .step-header.wrong   { border-left-color: var(--red); }
+  .step-num {
+    font-family: var(--mono); font-size: 11px; font-weight: 700;
+    color: var(--text-muted); white-space: nowrap;
+  }
+  .step-title { font-size: 14px; font-weight: 600; color: var(--text); }
+  .step-body { padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+  .hint {
+    font-size: 13px; color: var(--text-muted); font-style: italic;
+    border-left: 2px solid var(--border); padding-left: 10px;
+  }
+  .math-block {
+    background: var(--bg3); border-left: 3px solid var(--accent);
+    border-radius: 6px; padding: 14px 16px;
+    font-family: var(--mono); font-size: 15px; color: var(--accent);
+    letter-spacing: 0.3px;
+  }
+
+  /* ── QUIZ ── */
+  .quiz-section { display: flex; flex-direction: column; gap: 8px; }
+  .quiz-q { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+  .choice-btn {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; background: var(--bg3);
+    border: 1px solid var(--border); border-radius: 7px;
+    color: var(--text); font-family: var(--sans); font-size: 13px;
+    cursor: pointer; text-align: left; transition: all .12s; width: 100%;
+  }
+  .choice-btn:hover:not(:disabled) { border-color: var(--accent-dim); background: var(--accent-bg); }
+  .choice-label {
+    font-family: var(--mono); font-size: 11px; font-weight: 700;
+    color: var(--text-muted); min-width: 18px;
+  }
+  .choice-btn.correct-pick { background: var(--green-bg); border-color: var(--green); }
+  .choice-btn.correct-pick .choice-label { color: var(--green); }
+  .choice-btn.wrong-pick   { background: var(--red-bg);   border-color: var(--red); }
+  .choice-btn.wrong-pick   .choice-label { color: var(--red); }
+  .choice-btn:disabled { cursor: not-allowed; }
+
+  .quiz-feedback {
+    display: none; padding: 10px 14px; border-radius: 7px;
+    font-size: 13px; font-weight: 600;
+  }
+  .quiz-feedback.show { display: block; }
+  .quiz-feedback.ok { background: var(--green-bg); color: var(--green); }
+  .quiz-feedback.ng { background: var(--red-bg);   color: var(--red); }
+
+  .explanation {
+    display: none; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 7px; padding: 12px 14px;
+    font-size: 13px; color: var(--text-muted); line-height: 1.6;
+  }
+  .explanation.show { display: block; }
+
+  .next-btn {
+    align-self: flex-end; padding: 9px 20px;
+    background: var(--accent); color: #0d0d0f;
+    border: none; border-radius: 7px;
+    font-family: var(--sans); font-size: 13px; font-weight: 700;
+    cursor: pointer; display: none; transition: opacity .15s;
+  }
+  .next-btn.show { display: inline-block; }
+  .next-btn:hover { opacity: 0.88; }
+
+  /* ── FINAL CARD ── */
+  .final-card {
+    background: var(--green-bg); border: 1px solid rgba(34,197,94,0.3);
+    border-radius: var(--radius); padding: 24px 20px;
+    display: flex; flex-direction: column; gap: 14px;
+    animation: fadeUp .25s ease both;
+  }
+  .final-label { font-size: 11px; font-weight: 700; color: var(--green); letter-spacing: 0.8px; text-transform: uppercase; }
+  .final-answer { font-family: var(--mono); font-size: 20px; color: var(--text); font-weight: 700; }
+  .final-tip { font-size: 13px; color: var(--text-muted); border-left: 2px solid var(--green); padding-left: 10px; }
+  .final-score { font-size: 13px; color: var(--text-muted); }
+  .final-score span { color: var(--text); font-weight: 600; }
+  .try-again {
+    align-self: flex-start; padding: 9px 18px;
+    background: transparent; border: 1px solid var(--green);
+    border-radius: 7px; color: var(--green);
+    font-family: var(--sans); font-size: 13px; font-weight: 600;
+    cursor: pointer; transition: all .13s;
+  }
+  .try-again:hover { background: var(--green-bg); }
+
+  /* ── ERROR ── */
+  .error-card {
+    background: var(--red-bg); border: 1px solid rgba(239,68,68,0.3);
+    border-radius: var(--radius); padding: 20px;
+    font-size: 13px; color: var(--red); line-height: 1.6;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-left">
+    <span class="app-name">∫ math tutor</span>
+    <span class="app-sub">powered by Gemini via Cloud Run</span>
+  </div>
+  <div class="score-box">
+    <span class="score-c">✓ <span id="score-c">0</span></span>
+    <span class="score-w">✗ <span id="score-w">0</span></span>
+  </div>
+</header>
+
+<!-- ── CONFIG BAR ── -->
+<div class="config-bar">
+  <div class="status-wrap">
+    <div class="status-dot idle" id="status-dot"></div>
+    <span class="status-text" id="status-text">idle</span>
+  </div>
+</div>
+
+
+<main>
+  <div id="input-area">
+
+    <!-- Input -->
+    <div class="input-row">
+      <input id="eq-input" type="text" placeholder="Enter equation or expression…" autocomplete="off"
+        onkeydown="if(event.key==='Enter')solve()">
+    </div>
+
+    <!-- Clear / Back / Solve -->
+    <div class="action-row">
+      <button class="btn-clear" onclick="clearInput()">Clear</button>
+      <button class="btn-back" onclick="backspace()">⌫</button>
+      <button class="solve-btn" id="solve-btn" onclick="solve()">Solve →</button>
+    </div>
+
+    <!-- Examples toggle -->
+    <button class="examples-toggle" id="examples-toggle" onclick="toggleExamples()">
+      Examples <span class="arrow">▾</span>
+    </button>
+    <div class="examples-panel" id="examples-panel"></div>
+
+    <!-- Keypad -->
+    <div class="keypad-wrap" id="keypad-wrap"></div>
+
+  </div>
+
+  <!-- Output -->
+  <div id="output"></div>
+</main>
+
+<script>
+// ── STATE ──
+let scoreC = 0, scoreW = 0;
+let steps = [], currentStep = 0, finalAnswer = '', finalSummary = '';
+const answered = new Set();
+
+// ── SCORE ──
+function updateScore() {
+  document.getElementById('score-c').textContent = scoreC;
+  document.getElementById('score-w').textContent = scoreW;
+}
+
+// ── STATUS DOT ──
+function setStatus(state, text) {
+  const dot = document.getElementById('status-dot');
+  dot.className = 'status-dot ' + state;
+  document.getElementById('status-text').textContent = text;
+}
+
+
+// ── INPUT HELPERS ──
+function clearInput() {
+  document.getElementById('eq-input').value = '';
+  document.getElementById('eq-input').focus();
+}
+function backspace() {
+  const inp = document.getElementById('eq-input');
+  inp.value = inp.value.slice(0, -1);
+  inp.focus();
+}
+function appendToInput(val) {
+  const inp = document.getElementById('eq-input');
+  const start = inp.selectionStart;
+  const end = inp.selectionEnd;
+  const cur = inp.value;
+  inp.value = cur.slice(0, start) + val + cur.slice(end);
+  inp.selectionStart = inp.selectionEnd = start + val.length;
+  inp.focus();
+}
+
+// ── EXAMPLES PANEL ──
+const EXAMPLES = {
+  'Algebra 2': [
+    { label: 'Quadratic formula',    eq: 'x² − 5x + 6 = 0' },
+    { label: 'Systems of equations', eq: '2x + y = 7, x − y = 2' },
+    { label: 'Completing the square',eq: 'x² + 6x + 5 = 0' },
+    { label: 'Polynomial division',  eq: '(x³ − 3x² + 2x) / (x − 1)' },
+    { label: 'Rational expression',  eq: '(x² − 4) / (x − 2)' },
+    { label: 'Exponential equation', eq: '2^(x+1) = 32' },
+    { label: 'Logarithm equation',   eq: 'log₂(x) + log₂(x−2) = 3' },
+    { label: 'Absolute value',       eq: '|2x − 3| = 7' },
+  ],
+  'Pre-Calculus': [
+    { label: 'Trig identity',        eq: 'sin²(x) + cos²(x) = 1, verify' },
+    { label: 'Law of cosines',       eq: 'a² = b² + c² − 2bc·cos(A), solve for A' },
+    { label: 'Inverse trig',         eq: 'arctan(√3)' },
+    { label: 'Polar to rectangular', eq: 'r = 2cos(θ), convert to rectangular' },
+    { label: 'Sequence (arithmetic)',eq: 'a_n = 3 + 4(n−1), find a_10' },
+    { label: 'Geometric series',     eq: 'Σ (1/2)^n, n=0 to ∞' },
+  ],
+  'Calculus': [
+    { label: 'Integration by parts', eq: '∫ x·eˣ dx' },
+    { label: 'Product rule',         eq: 'd/dx [x² sin(x)]' },
+    { label: 'L\'Hôpital\'s rule',   eq: 'lim x→0 sin(x)/x' },
+    { label: 'Definite integral',    eq: '∫₀¹ 3x² dx' },
+    { label: 'Chain rule',           eq: 'd/dx [sin(x²)]' },
+    { label: 'Implicit differentiation', eq: 'x² + y² = 25, find dy/dx' },
+    { label: 'Related rates',        eq: 'sphere volume V = (4/3)πr³, dV/dt when r=3 and dr/dt=2' },
+    { label: 'U-substitution',       eq: '∫ 2x·cos(x²) dx' },
+    { label: 'Partial fractions',    eq: '∫ 1/(x²−1) dx' },
+  ],
+};
+
+(function buildExamples() {
+  const panel = document.getElementById('examples-panel');
+  for (const [subject, items] of Object.entries(EXAMPLES)) {
+    const sec = document.createElement('div');
+    sec.className = 'ex-subject';
+    const label = document.createElement('div');
+    label.className = 'ex-subject-label';
+    label.textContent = subject;
+    const chips = document.createElement('div');
+    chips.className = 'ex-chips';
+    items.forEach(item => {
+      const chip = document.createElement('span');
+      chip.className = 'ex-chip';
+      chip.textContent = item.label;
+      chip.title = item.eq;
+      chip.onclick = () => {
+        document.getElementById('eq-input').value = item.eq;
+        toggleExamples(false);
+        solve();
+      };
+      chips.appendChild(chip);
+    });
+    sec.appendChild(label);
+    sec.appendChild(chips);
+    panel.appendChild(sec);
+  }
+})();
+
+function toggleExamples(forceClose) {
+  const btn = document.getElementById('examples-toggle');
+  const panel = document.getElementById('examples-panel');
+  const isOpen = panel.classList.contains('open');
+  const shouldClose = forceClose === true || isOpen;
+  btn.classList.toggle('open', !shouldClose);
+  panel.classList.toggle('open', !shouldClose);
+}
+
+// ── KEYPAD ──
+// 3x3 grid with 0 centred on bottom row; '·' = invisible spacer
+const NUMBER_GRID = ['7','8','9','4','5','6','1','2','3','·','0','·'];
+const OPS_KEYS    = ['+','−','×','/','(',')','²','³','√','^'];
+const OTHER_CORE  = [
+  { label: 'Variables & Constants', keys: ['x','y','z','t','n','e','i','π'] },
+  { label: 'Functions', keys: ['sin','cos','tan','ln','log','exp','∫','d/dx','lim','∞'] },
+  { label: 'Relations', keys: ['=','≠','<','>','≤','≥','≈'] },
+];
+const MORE_KEYS = [
+  { label: 'Greek Letters', keys: ['α','β','γ','δ','ε','θ','λ','μ','σ','φ','ω','Σ','Π','Δ','∂'] },
+  { label: 'Calculus Operators', keys: ['∫₀¹','∂/∂x','lim x→0','dx','dy','∂'] },
+  { label: 'Trig (extended)', keys: ['arcsin','arccos','arctan','log₁₀','|x|','³'] },
+  { label: 'Logic & Set Symbols', keys: ['∈','∉','→','⇒','∧','∨','∀','∃'] },
+];
+
+(function buildKeypad() {
+  const wrap = document.getElementById('keypad-wrap');
+
+  // ── Numbers + Ops side by side ──
+  const numOpsRow = document.createElement('div');
+  numOpsRow.className = 'num-ops-row';
+
+  // Numbers column (3×3 grid, 0 centred on bottom)
+  const numCol = document.createElement('div');
+  numCol.className = 'key-section';
+  const numLbl = document.createElement('div');
+  numLbl.className = 'key-section-label';
+  numLbl.textContent = 'Numbers';
+  const numGrid = document.createElement('div');
+  numGrid.className = 'num-grid';
+  NUMBER_GRID.forEach(k => {
+    const btn = document.createElement('button');
+    btn.className = 'key';
+    if (k === '·') {
+      btn.style.visibility = 'hidden';
+      btn.style.pointerEvents = 'none';
+    } else {
+      btn.textContent = k;
+      btn.onclick = () => appendToInput(k);
+    }
+    numGrid.appendChild(btn);
+  });
+  numCol.appendChild(numLbl);
+  numCol.appendChild(numGrid);
+
+  // Operations column
+  const opsCol = document.createElement('div');
+  opsCol.className = 'ops-col';
+  const opsLbl = document.createElement('div');
+  opsLbl.className = 'key-section-label';
+  opsLbl.textContent = 'Operations';
+  const opsKeys = document.createElement('div');
+  opsKeys.className = 'ops-keys';
+  OPS_KEYS.forEach(k => {
+    const btn = document.createElement('button');
+    btn.className = 'key'; btn.textContent = k;
+    btn.onclick = () => appendToInput(k);
+    opsKeys.appendChild(btn);
+  });
+  opsCol.appendChild(opsLbl);
+  opsCol.appendChild(opsKeys);
+
+  numOpsRow.appendChild(numCol);
+  numOpsRow.appendChild(opsCol);
+  wrap.appendChild(numOpsRow);
+
+  // ── Remaining core sections ──
+  OTHER_CORE.forEach(sec => {
+    const div = document.createElement('div');
+    div.className = 'key-section';
+    const lbl = document.createElement('div');
+    lbl.className = 'key-section-label';
+    lbl.textContent = sec.label;
+    const row = document.createElement('div');
+    row.className = 'key-row';
+    sec.keys.forEach(k => {
+      const btn = document.createElement('button');
+      btn.className = 'key'; btn.textContent = k;
+      btn.onclick = () => appendToInput(k);
+      row.appendChild(btn);
+    });
+    div.appendChild(lbl);
+    div.appendChild(row);
+    wrap.appendChild(div);
+  });
+
+  const moreBtn = document.createElement('button');
+  moreBtn.className = 'more-toggle';
+  moreBtn.id = 'more-toggle';
+  moreBtn.innerHTML = 'More symbols <span class="arrow">▾</span>';
+  moreBtn.onclick = toggleMoreKeys;
+  wrap.appendChild(moreBtn);
+
+  const moreDiv = document.createElement('div');
+  moreDiv.className = 'more-keys';
+  moreDiv.id = 'more-keys';
+  MORE_KEYS.forEach(sec => {
+    const div = document.createElement('div');
+    div.className = 'key-section';
+    const lbl = document.createElement('div');
+    lbl.className = 'key-section-label';
+    lbl.textContent = sec.label;
+    const row = document.createElement('div');
+    row.className = 'key-row';
+    sec.keys.forEach(k => {
+      const btn = document.createElement('button');
+      btn.className = 'key'; btn.textContent = k;
+      btn.onclick = () => appendToInput(k);
+      row.appendChild(btn);
+    });
+    div.appendChild(lbl);
+    div.appendChild(row);
+    moreDiv.appendChild(div);
+  });
+  wrap.appendChild(moreDiv);
+})();
+
+function toggleMoreKeys() {
+  const btn = document.getElementById('more-toggle');
+  const div = document.getElementById('more-keys');
+  const isOpen = div.classList.contains('open');
+  btn.classList.toggle('open', !isOpen);
+  div.classList.toggle('open', !isOpen);
+}
+
+// ── SOLVE ──
+async function solve() {
+  const eq = document.getElementById('eq-input').value.trim();
+  if (!eq) return;
+  const btn = document.getElementById('solve-btn');
+  btn.disabled = true;
+  currentStep = 0; steps = []; finalAnswer = ''; finalSummary = '';
+
+  const out = document.getElementById('output');
+
+  // ── Phase 1: JS solver ──
+  out.innerHTML = `<div class="loading-card"><div class="spinner"></div><div class="loading-text">Solving <span style="color:var(--accent)">${escHtml(eq)}</span>…</div></div>`;
+
+  const solved = solveEquation(eq);
+  if (!solved) {
+    out.innerHTML = `<div class="error-card">⚠ This equation type isn't supported yet. Try a linear equation (2x + 3 = 7), quadratic (x² − 5x + 6 = 0), trig (sin(x) = 0.5), exponential (2^(x+1) = 32), or logarithm (log(x) = 2).</div>`;
+    btn.disabled = false; return;
+  }
+
+  finalAnswer = solved.answer;
+
+  // ── Phase 2: AI writes hints, questions, wrong choices ──
+  out.innerHTML = `<div class="loading-card"><div class="spinner"></div><div class="loading-text">Generating lesson with AI…</div></div>`;
+
+  const prompt = buildPrompt(eq, solved);
+  let raw;
+  try {
+    raw = await callGemini(prompt);
+  } catch(e) {
+    setStatus('bad', 'error');
+    out.innerHTML = `<div class="error-card">⚠ ${escHtml(String(e))}<br><br>Could not reach the math tutor server. Check your internet connection and try again.</div>`;
+    btn.disabled = false; return;
+  }
+
+  setStatus('ok', 'done');
+
+  let aiData;
+  try {
+    const clean = raw.replace(/^```json\s*/i,'').replace(/```\s*$/,'').trim();
+    aiData = JSON.parse(clean);
+  } catch(e) {
+    // AI returned bad JSON — fall back to generic questions so the lesson still works
+    aiData = {
+      steps: solved.steps.map((s, i) => ({
+        stepNumber: i + 1,
+        hint: `Think about how to approach: ${s.title.toLowerCase()}.`,
+        question: `What is the result of: ${s.title}?`,
+        wrongChoices: ['Not enough information', 'This step is skipped', 'Cannot be determined']
+      })),
+      summary: 'Always check your answer by substituting back into the original equation.'
+    };
+  }
+
+  finalSummary = aiData.summary || '';
+
+  // ── Merge JS-computed math with AI-written pedagogy ──
+  steps = solved.steps.map((solvedStep, i) => {
+    const aiStep = (aiData.steps || [])[i] || {};
+    const correctVal = solvedStep.correctValue;
+    const wrongs = (aiStep.wrongChoices || ['Try again', 'Not correct', 'Check your work']).slice(0, 3);
+    // Build 4 choices: correct + 3 wrong, shuffle
+    const allChoices = [correctVal, ...wrongs];
+    for (let j = allChoices.length - 1; j > 0; j--) {
+      const k = Math.floor(Math.random() * (j + 1));
+      [allChoices[j], allChoices[k]] = [allChoices[k], allChoices[j]];
+    }
+    const correctIdx = allChoices.indexOf(correctVal);
+    return {
+      title: solvedStep.title,
+      hint: aiStep.hint || `Think carefully about: ${solvedStep.title.toLowerCase()}.`,
+      math: solvedStep.math,
+      explanation: `The correct answer is: ${correctVal}. ${aiStep.hint || ''}`,
+      quiz: {
+        question: aiStep.question || `What is the result of this step?`,
+        choices: allChoices,
+        correct: correctIdx
+      }
+    };
+  });
+
+  out.innerHTML = '';
+  btn.disabled = false;
+  renderStep(0);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  ── BACKEND INTEGRATION POINT ──
+//
+//  This is the ONLY function that touches the Cloud Run backend.
+//  Receives: prompt (string)
+//  Returns:  raw JSON string from Gemini
+// ══════════════════════════════════════════════════════════════════
+const BACKEND_URL = 'https://math-tutor-server-456553582149.us-central1.run.app';
+
+async function callGemini(prompt) {
+  setStatus('busy', 'thinking…');
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 120_000);
+
+  let res;
+  try {
+    res = await fetch(`${BACKEND_URL}/ask`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({ prompt })
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`Server error ${res.status}: ${t}`);
+  }
+
+  const data = await res.json();
+  return data.response || '';
+}
+// ══════════════════════════════════════════════════════════════════
+
+// ══════════════════════════════════════════════════════════════════
+// ── JS MATH SOLVER ──
+// Computes the correct steps & answers so the AI never has to do math.
+// ══════════════════════════════════════════════════════════════════
+
+function solveEquation(eq) {
+  const cleaned = eq
+    .replace(/−/g, '-').replace(/×/g, '*').replace(/÷/g, '/')
+    .replace(/²/g, '^2').replace(/³/g, '^3')
+    .replace(/π/g, 'pi').replace(/∞/g, 'Infinity')
+    .replace(/√/g, 'sqrt').trim();
+
+  // ── Linear: ax + b = c ──
+  const linMatch = cleaned.match(/^([-\d.]*)\s*\*?\s*([a-z])\s*([+-]\s*[\d.]+)?\s*=\s*([-\d.]+)$/i);
+  if (linMatch) {
+    const a = parseFloat(linMatch[1] || '1');
+    const varName = linMatch[2];
+    const b = linMatch[3] ? parseFloat(linMatch[3].replace(/\s/g,'')) : 0;
+    const c = parseFloat(linMatch[4]);
+    const solution = (c - b) / a;
+    return {
+      type: 'linear',
+      varName,
+      a, b, c,
+      solution,
+      steps: [
+        { title: 'Identify the equation', math: eq, correctValue: `${a}${varName} ${b >= 0 ? '+' : ''}${b} = ${c}` },
+        { title: 'Isolate the variable term', math: `${a}${varName} = ${c} - (${b}) = ${c - b}`, correctValue: `${a}${varName} = ${c - b}` },
+        { title: 'Solve for ' + varName, math: `${varName} = ${c - b} / ${a} = ${solution}`, correctValue: `${varName} = ${solution}` },
+      ],
+      answer: `${varName} = ${solution}`
+    };
+  }
+
+  // ── Quadratic: ax² + bx + c = 0 ──
+  const quadMatch = cleaned.match(/^([-\d.]*)\s*\*?\s*[a-z]\^2\s*([+-]\s*[\d.]*\s*\*?\s*[a-z])?\s*([+-]\s*[\d.]+)?\s*=\s*0$/i);
+  if (quadMatch) {
+    const raw = cleaned.replace(/\s/g,'');
+    const a = (() => { const m = raw.match(/^([-\d.]*)x\^2/); return m ? (m[1]===''||m[1]==='+'?1:m[1]==='-'?-1:parseFloat(m[1])) : 1; })();
+    const b = (() => { const m = raw.match(/x\^2([+-][\d.]*)x/); return m ? parseFloat(m[1]) : 0; })();
+    const c = (() => { const m = raw.match(/x([+-][\d.]+)=0/); return m ? parseFloat(m[1]) : 0; })();
+    const disc = b*b - 4*a*c;
+    if (disc < 0) {
+      const re = -b/(2*a);
+      const im = Math.sqrt(-disc)/(2*a);
+      return {
+        type: 'quadratic-complex',
+        a, b, c, disc,
+        steps: [
+          { title: 'Identify coefficients', math: `a = ${a}, b = ${b}, c = ${c}`, correctValue: `a=${a}, b=${b}, c=${c}` },
+          { title: 'Calculate discriminant', math: `b² - 4ac = ${b}² - 4(${a})(${c}) = ${disc}`, correctValue: `${disc}` },
+          { title: 'Apply quadratic formula', math: `x = (${-b} ± √${disc}) / ${2*a}`, correctValue: `x = ${re} ± ${im}i` },
+        ],
+        answer: `x = ${re} + ${im}i  or  x = ${re} - ${im}i`
+      };
+    }
+    const sqrtDisc = Math.sqrt(disc);
+    const x1 = (-b + sqrtDisc) / (2*a);
+    const x2 = (-b - sqrtDisc) / (2*a);
+    const canFactor = Number.isInteger(x1) && Number.isInteger(x2);
+    return {
+      type: 'quadratic',
+      a, b, c, disc, x1, x2, canFactor,
+      steps: [
+        { title: 'Identify coefficients', math: `a = ${a}, b = ${b}, c = ${c}`, correctValue: `a=${a}, b=${b}, c=${c}` },
+        canFactor
+          ? { title: 'Factor the quadratic', math: `(x ${x1<=0?'+':'-'} ${Math.abs(x1)})(x ${x2<=0?'+':'-'} ${Math.abs(x2)}) = 0`, correctValue: `(x${x1<=0?'+':'-'}${Math.abs(x1)})(x${x2<=0?'+':'-'}${Math.abs(x2)})` }
+          : { title: 'Calculate discriminant', math: `b² - 4ac = ${b}² - 4(${a})(${c}) = ${disc}`, correctValue: `${disc}` },
+        { title: 'Apply zero product / quadratic formula', math: `x = ${x1}  or  x = ${x2}`, correctValue: `x = ${x1} or x = ${x2}` },
+        { title: 'Verify solutions', math: `Check x=${x1}: ${a}(${x1})² + ${b}(${x1}) + ${c} = ${a*x1*x1 + b*x1 + c}  ✓\nCheck x=${x2}: ${a}(${x2})² + ${b}(${x2}) + ${c} = ${a*x2*x2 + b*x2 + c}  ✓`, correctValue: `x = ${x1} and x = ${x2} both check out` },
+      ],
+      answer: `x = ${x1}  or  x = ${x2}`
+    };
+  }
+
+  // ── Trig equation: sin/cos/tan(x) = value ──
+  const trigMatch = cleaned.match(/^(sin|cos|tan)\(([^)]+)\)\s*=\s*([-\d./]+)$/i);
+  if (trigMatch) {
+    const fn = trigMatch[1].toLowerCase();
+    const arg = trigMatch[2];
+    const val = eval(trigMatch[3]);
+    let degSol, radSol, degSol2, radSol2;
+    if (fn === 'sin') {
+      radSol = Math.asin(val); degSol = radSol * 180/Math.PI;
+      radSol2 = Math.PI - radSol; degSol2 = radSol2 * 180/Math.PI;
+    } else if (fn === 'cos') {
+      radSol = Math.acos(val); degSol = radSol * 180/Math.PI;
+      radSol2 = -radSol; degSol2 = radSol2 * 180/Math.PI;
+    } else {
+      radSol = Math.atan(val); degSol = radSol * 180/Math.PI;
+      radSol2 = radSol + Math.PI; degSol2 = radSol2 * 180/Math.PI;
+    }
+    const r = (n) => Math.round(n * 10000) / 10000;
+    return {
+      type: 'trig',
+      fn, val,
+      steps: [
+        { title: 'Identify the trig function', math: `${fn}(${arg}) = ${val}`, correctValue: fn },
+        { title: `Apply arc${fn}`, math: `${arg} = arc${fn}(${val})`, correctValue: `arc${fn}(${val})` },
+        { title: 'Solutions in degrees', math: `${arg} ≈ ${r(degSol)}° or ${arg} ≈ ${r(degSol2)}°`, correctValue: `${r(degSol)}°` },
+        { title: 'Solutions in radians', math: `${arg} ≈ ${r(radSol)} rad or ${arg} ≈ ${r(radSol2)} rad`, correctValue: `${r(radSol)} rad` },
+      ],
+      answer: `${arg} ≈ ${r(degSol)}° (${r(radSol)} rad) + n·360°`
+    };
+  }
+
+  // ── Exponential: a^(expr) = b ──
+  const expMatch = cleaned.match(/^([\d.]+)\^[\(\s]?([^)=]+)\)?\s*=\s*([\d.]+)$/);
+  if (expMatch) {
+    const base = parseFloat(expMatch[1]);
+    const exprStr = expMatch[2].trim();
+    const rhs = parseFloat(expMatch[3]);
+    const logVal = Math.log(rhs) / Math.log(base);
+    // Try to solve simple expr = logVal (e.g. x+1 = 5 → x = 4)
+    let solution = `${exprStr} = ${logVal}`;
+    const simpleExpr = exprStr.match(/^([a-z])\s*([+-]\s*[\d.]+)?$/i);
+    if (simpleExpr) {
+      const offset = simpleExpr[2] ? parseFloat(simpleExpr[2].replace(/\s/g,'')) : 0;
+      solution = `${simpleExpr[1]} = ${logVal - offset}`;
+    }
+    return {
+      type: 'exponential',
+      base, rhs, logVal,
+      steps: [
+        { title: 'Identify the base', math: `Base = ${base}, equation: ${base}^(${exprStr}) = ${rhs}`, correctValue: `${base}` },
+        { title: 'Apply logarithm to both sides', math: `log_${base}(${base}^(${exprStr})) = log_${base}(${rhs})`, correctValue: `log_${base}` },
+        { title: 'Simplify and solve', math: `${exprStr} = log_${base}(${rhs}) = ${logVal}\n${solution}`, correctValue: solution },
+      ],
+      answer: solution
+    };
+  }
+
+  // ── Logarithm: log_b(x) = c ──
+  const logMatch = cleaned.match(/^log_?([\d.]+)?\(([^)]+)\)\s*=\s*([-\d.]+)$/i);
+  if (logMatch) {
+    const base = logMatch[1] ? parseFloat(logMatch[1]) : 10;
+    const arg = logMatch[2];
+    const rhs = parseFloat(logMatch[3]);
+    const solution = Math.pow(base, rhs);
+    return {
+      type: 'logarithm',
+      base, rhs, solution,
+      steps: [
+        { title: 'Identify the logarithm', math: `log_${base}(${arg}) = ${rhs}`, correctValue: `base = ${base}` },
+        { title: 'Rewrite in exponential form', math: `${base}^${rhs} = ${arg}`, correctValue: `${base}^${rhs}` },
+        { title: 'Solve for the argument', math: `${arg} = ${solution}`, correctValue: `${solution}` },
+      ],
+      answer: `${arg} = ${solution}`
+    };
+  }
+
+  // ── System of two equations ──
+  const sysMatch = eq.match(/^(.+),\s*(.+)$/);
+  if (sysMatch) {
+    try {
+      const result = math.solve([sysMatch[1].replace(/−/g,'-'), sysMatch[2].replace(/−/g,'-')]);
+      if (result) {
+        const vars = Object.keys(result);
+        return {
+          type: 'system',
+          steps: [
+            { title: 'Write the system', math: `Eq1: ${sysMatch[1]}\nEq2: ${sysMatch[2]}`, correctValue: 'system of 2 equations' },
+            { title: 'Elimination / substitution', math: 'Solve one equation for one variable, substitute into the other.', correctValue: 'substitution' },
+            { title: 'Solution', math: vars.map(v=>`${v} = ${result[v]}`).join(', '), correctValue: vars.map(v=>`${v}=${result[v]}`).join(', ') },
+          ],
+          answer: vars.map(v=>`${v} = ${result[v]}`).join(', ')
+        };
+      }
+    } catch(e) { /* fall through */ }
+  }
+
+  // ── Fallback: return null so solve() can show a friendly error ──
+  return null;
+}
+
+// ── PROMPT (AI only writes hints, questions, explanations — never does math) ──
+function buildPrompt(eq, solved) {
+  const stepsJson = JSON.stringify(solved.steps.map((s, i) => ({
+    stepNumber: i + 1,
+    title: s.title,
+    math: s.math,
+    correctValue: s.correctValue
+  })), null, 2);
+
+  return `You are a math tutor writing quiz questions. The math has already been solved for you — do NOT change any numbers or answers.
+
+Problem: ${eq}
+Final answer: ${solved.answer}
+
+Here are the steps with the correct values already computed:
+${stepsJson}
+
+Your job: for each step, write a hint, a quiz question, and 3 wrong choices. The correct answer is already given as correctValue — do not change it.
+
+Return ONLY this JSON object. No text before or after it. No markdown. No backticks.
+
+{
+  "steps": [
+    {
+      "stepNumber": 1,
+      "hint": "one sentence hint about the technique — do NOT reveal the answer",
+      "question": "a quiz question testing understanding of this step",
+      "wrongChoices": ["wrong1", "wrong2", "wrong3"]
+    }
+  ],
+  "summary": "one short exam tip for this type of problem"
+}
+
+RULES:
+1. Write exactly ${solved.steps.length} steps in the same order.
+2. The hint must not give away the answer but should guide the student's thinking.
+3. The 3 wrong choices must be plausible mistakes a student could make on this specific problem — use numbers close to the correct answer, not random values.
+4. Do not include the correct answer in wrongChoices.
+5. Keep questions short and clear.
+6. Return only the JSON. Nothing else.`;
+}
+
+// ── RENDER STEP ──
+function renderStep(idx) {
+  const s = steps[idx];
+  if (!s) return;
+
+  const origChoices = [...s.quiz.choices];
+  const correctText = origChoices[s.quiz.correct];
+  const shuffled = [...origChoices];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  const newCorrect = shuffled.indexOf(correctText);
+
+  const labels = ['A','B','C','D'];
+  const card = document.createElement('div');
+  card.className = 'step-card';
+  card.id = `step-${idx}`;
+
+  card.innerHTML = `
+    <div class="step-header" id="sh-${idx}">
+      <span class="step-num">STEP ${idx+1} / ${steps.length}</span>
+      <span class="step-title">${escHtml(s.title)}</span>
+    </div>
+    <div class="step-body">
+      <div class="hint">${escHtml(s.hint)}</div>
+      <div class="quiz-section">
+        <div class="quiz-q">${escHtml(s.quiz.question)}</div>
+        ${shuffled.map((c,i) => `
+          <button class="choice-btn" id="ch-${idx}-${i}" onclick="answer(${idx},${i},${newCorrect})">
+            <span class="choice-label">${labels[i]}</span>
+            <span>${escHtml(c)}</span>
+          </button>`).join('')}
+        <div class="quiz-feedback" id="fb-${idx}"></div>
+        <div class="math-block" id="math-${idx}" style="display:none">${escHtml(s.math)}</div>
+        <div class="explanation" id="ex-${idx}">${escHtml(s.explanation)}</div>
+      </div>
+      <button class="next-btn" id="next-${idx}" onclick="advance(${idx})">
+        ${idx < steps.length - 1 ? 'Next step →' : 'See answer →'}
+      </button>
+    </div>`;
+
+  document.getElementById('output').appendChild(card);
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ── ANSWER ──
+function answer(stepIdx, chosen, correct) {
+  if (answered.has(stepIdx)) return;
+  answered.add(stepIdx);
+  for (let i = 0; i < 4; i++) {
+    const btn = document.getElementById(`ch-${stepIdx}-${i}`);
+    if (btn) btn.disabled = true;
+  }
+  const fb = document.getElementById(`fb-${stepIdx}`);
+  const ex = document.getElementById(`ex-${stepIdx}`);
+  const sh = document.getElementById(`sh-${stepIdx}`);
+  const mathBlock = document.getElementById(`math-${stepIdx}`);
+  if (mathBlock) mathBlock.style.display = 'block';
+  const labels = ['A','B','C','D'];
+
+  document.getElementById(`ch-${stepIdx}-${correct}`).classList.add('correct-pick');
+
+  if (chosen === correct) {
+    scoreC++;
+    fb.textContent = '✓ Correct!';
+    fb.className = 'quiz-feedback show ok';
+    sh.classList.add('correct');
+  } else {
+    scoreW++;
+    document.getElementById(`ch-${stepIdx}-${chosen}`).classList.add('wrong-pick');
+    fb.textContent = `✗ The correct answer is ${labels[correct]}`;
+    fb.className = 'quiz-feedback show ng';
+    sh.classList.add('wrong');
+  }
+
+  ex.classList.add('show');
+  document.getElementById(`next-${stepIdx}`).classList.add('show');
+  updateScore();
+}
+
+// ── ADVANCE ──
+function advance(idx) {
+  document.getElementById(`next-${idx}`).classList.remove('show');
+  if (idx < steps.length - 1) {
+    renderStep(idx + 1);
+  } else {
+    renderFinal();
+  }
+}
+
+// ── FINAL ──
+function renderFinal() {
+  const out = document.getElementById('output');
+  const card = document.createElement('div');
+  card.className = 'final-card';
+  card.innerHTML = `
+    <div class="final-label">✓ Solution Complete</div>
+    <div class="final-answer">${escHtml(finalAnswer)}</div>
+    <div class="final-tip">💡 ${escHtml(finalSummary)}</div>
+    <div class="final-score">Session score: <span>${scoreC} correct</span>, <span>${scoreW} wrong</span></div>
+    <button class="try-again" onclick="tryAnother()">try another →</button>`;
+  out.appendChild(card);
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ── TRY ANOTHER ──
+function tryAnother() {
+  document.getElementById('output').innerHTML = '';
+  document.getElementById('eq-input').value = '';
+  steps = []; currentStep = 0;
+  answered.clear();
+  setStatus('idle', 'idle');
+  document.getElementById('eq-input').focus();
+}
+
+// ── UTIL ──
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>
